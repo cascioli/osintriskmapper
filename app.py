@@ -481,15 +481,94 @@ def _run_network_intel_pipeline(
 
 # ── Heatmap page ───────────────────────────────────────────────────────────────
 
-def _render_heatmap_page() -> None:
-    st.title("🗺️ Mappa del Rischio Digitale — Provincia di Foggia")
-    st.markdown("---")
-    st.info(
-        "I dati in questa mappa sono aggregati a livello comunale per garantire "
-        "l'anonimato delle singole aziende, in conformità con il GDPR."
+_CYBER_CSS = """
+<style>
+.stApp { background-color: #050d1a !important; }
+.cyber-title {
+    font-family: monospace; color: #00d4ff;
+    text-shadow: 0 0 12px rgba(0,212,255,0.4);
+    font-size: 1.6rem; font-weight: bold;
+    border-bottom: 1px solid rgba(0,212,255,0.25);
+    padding-bottom: 8px; margin-bottom: 16px;
+}
+.cyber-banner {
+    font-family: monospace; color: #00d4ff;
+    background: #0a1628;
+    border: 1px solid rgba(0,212,255,0.25);
+    border-left: 3px solid #00d4ff;
+    padding: 10px 16px; font-size: 0.82rem;
+    margin-bottom: 20px; line-height: 1.6;
+}
+.kpi-card {
+    background: #0a1628;
+    border: 1px solid rgba(0,212,255,0.2);
+    border-top: 2px solid #00d4ff;
+    padding: 18px 12px; text-align: center;
+    font-family: monospace;
+}
+.kpi-value {
+    color: #00d4ff; font-size: 2rem; font-weight: bold;
+    text-shadow: 0 0 10px rgba(0,212,255,0.5);
+    line-height: 1.1;
+}
+.kpi-label {
+    color: rgba(0,212,255,0.55); font-size: 0.65rem;
+    letter-spacing: 2px; margin-top: 6px;
+}
+.cyber-section {
+    font-family: monospace; color: #00d4ff;
+    font-size: 0.9rem; letter-spacing: 1px;
+    border-bottom: 1px solid rgba(0,212,255,0.15);
+    padding-bottom: 4px; margin: 20px 0 10px;
+}
+[data-testid="stDataFrame"] {
+    border: 1px solid rgba(0,212,255,0.2) !important;
+}
+</style>
+"""
+
+
+def _kpi_card(value: str, label: str) -> str:
+    return (
+        f'<div class="kpi-card">'
+        f'<div class="kpi-value">{value}</div>'
+        f'<div class="kpi-label">{label}</div>'
+        f'</div>'
     )
 
-    with st.spinner("🌍 Caricamento GeoJSON comuni…"):
+
+def _render_heatmap_page() -> None:
+    st.markdown(_CYBER_CSS, unsafe_allow_html=True)
+
+    st.markdown(
+        '<div class="cyber-title">&gt; RISK_MAP :: PROVINCIA DI FOGGIA</div>',
+        unsafe_allow_html=True,
+    )
+
+    st.markdown(
+        '<div class="cyber-banner">'
+        "// GDPR COMPLIANCE — i dati sono aggregati a livello comunale.<br>"
+        "// Nessuna informazione identificativa delle singole aziende è esposta.<br>"
+        "// Fonte: dati simulati a scopo dimostrativo."
+        "</div>",
+        unsafe_allow_html=True,
+    )
+
+    df = generate_mock_province_data()
+    tot_pmi = int(df["PMI_Analizzate"].sum())
+    tot_vuln = int(df["Vulnerabilita_Critiche"].sum())
+    top_comune = df.loc[df["Rischio_Medio"].idxmax(), "Comune"].upper()
+    avg_risk = round(float(df["Rischio_Medio"].mean()), 1)
+
+    k1, k2, k3, k4 = st.columns(4)
+    k1.markdown(_kpi_card(str(tot_pmi), "PMI ANALIZZATE"), unsafe_allow_html=True)
+    k2.markdown(_kpi_card(str(tot_vuln), "VULN CRITICHE"), unsafe_allow_html=True)
+    k3.markdown(_kpi_card(top_comune, "TOP RISK"), unsafe_allow_html=True)
+    k4.markdown(_kpi_card(str(avg_risk), "RISCHIO MEDIO"), unsafe_allow_html=True)
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    with st.spinner("// loading geo-data..."):
         fig = render_heatmap()
 
     if fig is None:
@@ -500,9 +579,11 @@ def _render_heatmap_page() -> None:
     else:
         st.plotly_chart(fig, use_container_width=True)
 
-    st.markdown("---")
-    st.subheader("📊 Dati Aggregati per Comune")
-    st.dataframe(generate_mock_province_data(), width="stretch", hide_index=True)
+    st.markdown(
+        '<div class="cyber-section">&gt; DATA_TABLE :: COMUNI</div>',
+        unsafe_allow_html=True,
+    )
+    st.dataframe(df, width="stretch", hide_index=True)
 
 
 # ── Analysis page ───────────────────────────────────────────────────────────────
