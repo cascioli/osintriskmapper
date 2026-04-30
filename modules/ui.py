@@ -166,7 +166,7 @@ def render_consolidated_table(df: pd.DataFrame) -> None:
 
     st.dataframe(
         df,
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
         column_config={
             "Porta": st.column_config.TextColumn("Porta", width="small"),

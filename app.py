@@ -10,6 +10,8 @@ Usage:
     streamlit run app.py
 """
 
+from __future__ import annotations
+
 import pandas as pd
 import streamlit as st
 
@@ -25,6 +27,7 @@ from modules.censys_client import fetch_censys
 from modules.leakix_client import fetch_leakix
 from modules.zoomeye_client import fetch_zoomeye
 from modules.ui import render_host_metrics, render_consolidated_table
+from modules.dashboard_map import render_heatmap, generate_mock_province_data
 from utils.config import get_api_keys
 
 _GEMINI_MODELS: dict[str, str] = {
@@ -51,6 +54,13 @@ def _key_field(
 def _render_sidebar(env: dict[str, str]) -> dict:
     """Build the unified sidebar and return the active configuration."""
     with st.sidebar:
+        st.header("🗺️ Modalità")
+        mode = st.radio(
+            "Seleziona modalità",
+            ["Analisi Target", "Heatmap Territoriale"],
+            label_visibility="collapsed",
+        )
+        st.markdown("---")
         st.header("⚙️ Configurazione")
         st.markdown("---")
 
@@ -140,6 +150,7 @@ def _render_sidebar(env: dict[str, str]) -> dict:
         )
 
     return {
+        "mode": mode,
         "provider": provider,
         "model_name": model_name,
         "ai_key": ai_key,
@@ -184,7 +195,7 @@ def _render_breach_table(df: pd.DataFrame) -> None:
 
     st.dataframe(
         display.style.apply(colour_row, axis=1).hide(axis="index"),
-        use_container_width=True,
+        width="stretch",
     )
 
 
@@ -210,7 +221,7 @@ def _run_subdomain_pipeline(
         st.success(f"✅ **{len(subdomains)} sottodomini unici** rilevati via Certificate Transparency.")
 
         df = pd.DataFrame({"Sottodomini Rilevati": subdomains})
-        st.dataframe(df.style.hide(axis="index"), use_container_width=True)
+        st.dataframe(df.style.hide(axis="index"), width="stretch")
 
         with st.expander("📦 Dati grezzi (debug)"):
             st.json(subdomains)
@@ -333,7 +344,7 @@ def _run_dorking_pipeline(
             df = pd.DataFrame(documents).rename(
                 columns={"title": "Nome File/Titolo", "url": "URL"}
             )
-            st.dataframe(df.style.hide(axis="index"), use_container_width=True)
+            st.dataframe(df.style.hide(axis="index"), width="stretch")
 
         with st.expander("📦 Dati grezzi (debug)"):
             st.json(documents)
@@ -468,19 +479,35 @@ def _run_network_intel_pipeline(
             st.json(debug)
 
 
-# ── Main ───────────────────────────────────────────────────────────────────────
+# ── Heatmap page ───────────────────────────────────────────────────────────────
 
-def main() -> None:
-    st.set_page_config(
-        page_title="OSINT Risk Mapper",
-        page_icon="🔍",
-        layout="wide",
-        initial_sidebar_state="expanded",
+def _render_heatmap_page() -> None:
+    st.title("🗺️ Mappa del Rischio Digitale — Provincia di Foggia")
+    st.markdown("---")
+    st.info(
+        "I dati in questa mappa sono aggregati a livello comunale per garantire "
+        "l'anonimato delle singole aziende, in conformità con il GDPR."
     )
 
-    env = get_api_keys()
-    config = _render_sidebar(env)
+    with st.spinner("🌍 Caricamento GeoJSON comuni…"):
+        fig = render_heatmap()
 
+    if fig is None:
+        st.error(
+            "❌ Impossibile caricare il GeoJSON remoto. "
+            "Verifica la connessione internet e riprova."
+        )
+    else:
+        st.plotly_chart(fig, use_container_width=True)
+
+    st.markdown("---")
+    st.subheader("📊 Dati Aggregati per Comune")
+    st.dataframe(generate_mock_province_data(), width="stretch", hide_index=True)
+
+
+# ── Analysis page ───────────────────────────────────────────────────────────────
+
+def _render_analysis_page(config: dict) -> None:
     st.title("🔍 OSINT Risk Mapper")
     st.caption(
         "Threat Intelligence passiva · Email Breach + Network Intel per domini aziendali"
@@ -503,7 +530,7 @@ def main() -> None:
             label_visibility="collapsed",
         )
     with col_btn:
-        analyze_btn = st.button("🔍 Analizza", use_container_width=True, type="primary")
+        analyze_btn = st.button("🔍 Analizza", width="stretch", type="primary")
 
     if not analyze_btn:
         st.markdown(
@@ -554,6 +581,25 @@ def main() -> None:
         exposed_documents=exposed_documents,
     )
     _run_network_intel_pipeline(domain, config, tab_network)
+
+
+# ── Main ───────────────────────────────────────────────────────────────────────
+
+def main() -> None:
+    st.set_page_config(
+        page_title="OSINT Risk Mapper",
+        page_icon="🔍",
+        layout="wide",
+        initial_sidebar_state="expanded",
+    )
+
+    env = get_api_keys()
+    config = _render_sidebar(env)
+
+    if config["mode"] == "Heatmap Territoriale":
+        _render_heatmap_page()
+    else:
+        _render_analysis_page(config)
 
 
 if __name__ == "__main__":
