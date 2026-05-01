@@ -1,16 +1,11 @@
-"""AI-powered threat intelligence report generator.
-
-Supports Google Gemini (via google-genai) and OpenAI.
-"""
+"""AI-powered threat intelligence report generator (Gemini only)."""
 
 from __future__ import annotations
 
 import json
-from typing import Literal
 
 from google import genai
 from google.genai import types as genai_types
-from openai import OpenAI
 
 
 _SYSTEM_PROMPT = (
@@ -30,34 +25,29 @@ _SYSTEM_PROMPT = (
     "Fornisci raccomandazioni su come limitare l'indicizzazione."
 )
 
-Provider = Literal["gemini", "openai"]
-
 
 def generate_risk_report(
     data_json: dict,
-    provider: Provider,
+    provider: str,
     model_name: str,
     api_key: str,
     subdomains: list[str] | None = None,
     exposed_documents: list[dict[str, str]] | None = None,
 ) -> str:
-    """Generate an executive risk report from aggregated breach data.
+    """Generate an executive risk report from aggregated breach data via Gemini.
 
     Args:
         data_json:          Dict mapping email addresses to lists of breach source names.
-                            Example: {"user@example.com": ["LinkedIn", "Adobe"]}
-        provider:           "gemini" or "openai".
-        model_name:         Model identifier (e.g. "gemini-2.5-flash", "gpt-4o-mini").
-        api_key:            The relevant provider API key.
-        subdomains:         Optional list of subdomains found via Certificate Transparency.
-        exposed_documents:  Optional list of dicts with "title" and "url" keys,
-                            representing publicly indexed sensitive files found via dorking.
+        provider:           Ignored — always uses Gemini.
+        model_name:         Gemini model ID (e.g. "gemini-2.5-flash").
+        api_key:            Google AI Studio API key.
+        subdomains:         Optional list of subdomains from Certificate Transparency.
+        exposed_documents:  Optional list of dicts with "title" and "url" keys.
 
     Returns:
         The raw text of the AI-generated report.
 
     Raises:
-        ValueError: If provider is not recognised.
         RuntimeError: On API call failures.
     """
     subdomain_section = ""
@@ -88,16 +78,6 @@ def generate_risk_report(
         "6. Raccomandazioni immediate\n"
     )
 
-    if provider == "gemini":
-        return _call_gemini(api_key, model_name, user_prompt)
-    if provider == "openai":
-        return _call_openai(api_key, model_name, user_prompt)
-
-    raise ValueError(f"Provider non supportato: '{provider}'. Usare 'gemini' o 'openai'.")
-
-
-def _call_gemini(api_key: str, model_name: str, user_prompt: str) -> str:
-    """Call a Gemini model using the google-genai SDK."""
     try:
         client = genai.Client(api_key=api_key)
         response = client.models.generate_content(
@@ -111,20 +91,3 @@ def _call_gemini(api_key: str, model_name: str, user_prompt: str) -> str:
         return response.text or ""
     except Exception as exc:
         raise RuntimeError(f"Gemini API error: {exc}") from exc
-
-
-def _call_openai(api_key: str, model_name: str, user_prompt: str) -> str:
-    """Call an OpenAI model."""
-    try:
-        client = OpenAI(api_key=api_key)
-        completion = client.chat.completions.create(
-            model=model_name,
-            messages=[
-                {"role": "system", "content": _SYSTEM_PROMPT},
-                {"role": "user", "content": user_prompt},
-            ],
-            temperature=0.3,
-        )
-        return completion.choices[0].message.content or ""
-    except Exception as exc:
-        raise RuntimeError(f"OpenAI API error: {exc}") from exc

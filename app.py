@@ -16,7 +16,7 @@ import pandas as pd
 import streamlit as st
 
 from modules.ai_analyzer import generate_risk_report
-from modules.llm_client import analyze_with_gemini, analyze_with_openai_compat
+from modules.llm_client import analyze_with_gemini
 from modules.merger import merge_sources, to_dataframe
 from modules.osint_dorking import search_exposed_documents
 from modules.osint_hunter import fetch_emails_for_domain
@@ -30,29 +30,19 @@ from modules.ui import render_host_metrics, render_consolidated_table
 from modules.dashboard_map import render_heatmap, generate_mock_province_data
 from utils.config import get_api_keys
 
-_GEMINI_MODELS: dict[str, str] = {
-    "Gemini 2.5 Flash": "gemini-2.5-flash",
-    "Gemini 2.5 Flash-Lite": "gemini-2.5-flash-lite-preview-06-17",
-}
+_GEMINI_MODEL = "gemini-2.5-flash"
+_MAX_SCANS_PER_SESSION = 5
 
 
 # ── Sidebar ────────────────────────────────────────────────────────────────────
 
-def _key_field(
-    label: str,
-    env_value: str,
-    session_key: str,
-    help_text: str = "",
-) -> str:
-    """Render a key input: green badge if loaded from .env, password field otherwise."""
-    if env_value:
-        st.success(f"{label} caricata da .env ✓")
-        return env_value
-    return st.text_input(label, type="password", key=session_key, help=help_text)
+def _status(label: str, ok: bool) -> None:
+    icon = "✅" if ok else "❌"
+    st.markdown(f"{icon} {label}")
 
 
 def _render_sidebar(env: dict[str, str]) -> dict:
-    """Build the unified sidebar and return the active configuration."""
+    """Build sidebar with mode selector and feature status indicators."""
     with st.sidebar:
         st.header("🗺️ Modalità")
         mode = st.radio(
@@ -61,109 +51,34 @@ def _render_sidebar(env: dict[str, str]) -> dict:
             label_visibility="collapsed",
         )
         st.markdown("---")
-        st.header("⚙️ Configurazione")
+
+        st.header("⚙️ Stato Servizi")
+        _status("Email Breach (Hunter.io)", bool(env["HUNTER_API_KEY"]))
+        _status("Breach DB (Leak-Lookup)", bool(env["LEAKLOOKUP_API_KEY"]))
+        _status("Network Intel (ZoomEye)", bool(env["ZOOMEYE_API_KEY"]))
+        _status(
+            "Network Intel (Censys)",
+            bool(env["CENSYS_API_ID"]) and bool(env["CENSYS_API_SECRET"]),
+        )
+        _status("Network Intel (LeakIX)", bool(env["LEAKIX_API_KEY"]))
+        _status("Google Dorking", bool(env["GOOGLE_SEARCH_API_KEY"]) and bool(env["GOOGLE_CX_ID"]))
+        _status("AI Reports (Gemini)", bool(env["GEMINI_API_KEY"]))
         st.markdown("---")
-
-        # ── AI provider ───────────────────────────────────────────────────────
-        st.subheader("🤖 Modello AI")
-        ai_choice = st.selectbox(
-            "Provider",
-            options=["Gemini 2.5 Flash", "Gemini 2.5 Flash-Lite", "OpenAI-Compatible"],
-        )
-
-        if ai_choice in _GEMINI_MODELS:
-            provider = "gemini"
-            model_name = _GEMINI_MODELS[ai_choice]
-            openai_base_url = "https://api.openai.com/v1"
-            openai_model = "gpt-4o-mini"
-            ai_key = _key_field(
-                "Gemini API Key", env["GEMINI_API_KEY"], "gemini_key",
-                "Google AI Studio — aistudio.google.com",
-            )
-        else:
-            provider = "openai_compat"
-            model_name = ""
-            ai_key = _key_field(
-                "OpenAI API Key", env["OPENAI_API_KEY"], "openai_key",
-            )
-            openai_base_url = st.text_input(
-                "Base URL", value="https://api.openai.com/v1",
-                help="Per Ollama locale: http://localhost:11434/v1",
-            )
-            openai_model = st.text_input(
-                "Modello", value="gpt-4o-mini",
-                help="Es: gpt-4o · llama3.2",
-            )
-            model_name = openai_model
-
-        st.markdown("---")
-
-        # ── Email Breach sources ──────────────────────────────────────────────
-        st.subheader("📧 Email Breach")
-        hunter_key = _key_field(
-            "Hunter.io API Key", env["HUNTER_API_KEY"], "hunter_key",
-            "hunter.io — email discovery per dominio",
-        )
-        leaklookup_key = _key_field(
-            "Leak-Lookup API Key", env["LEAKLOOKUP_API_KEY"], "leaklookup_key",
-            "leak-lookup.com — breach database",
-        )
-
-        st.markdown("---")
-
-        # ── Network Intel sources ─────────────────────────────────────────────
-        st.subheader("🌐 Network Intel")
-        zoomeye_key = _key_field(
-            "ZoomEye API Key", env["ZOOMEYE_API_KEY"], "zoomeye_key",
-            "zoomeye.org — host search",
-        )
-        st.markdown("**Censys**")
-        censys_id = _key_field(
-            "Censys API ID", env["CENSYS_API_ID"], "censys_id",
-            "search.censys.io/account/api",
-        )
-        censys_secret = _key_field(
-            "Censys API Secret", env["CENSYS_API_SECRET"], "censys_secret",
-        )
-        leakix_key = _key_field(
-            "LeakIX API Key", env["LEAKIX_API_KEY"], "leakix_key",
-            "leakix.net — leak & service events",
-        )
-
-        st.markdown("---")
-
-        # ── Google Dorking ────────────────────────────────────────────────────
-        st.subheader("🔎 Google Dorking")
-        google_search_key = _key_field(
-            "Google Search API Key", env["GOOGLE_SEARCH_API_KEY"], "google_search_key",
-            "console.cloud.google.com — Custom Search JSON API",
-        )
-        google_cx_id = _key_field(
-            "Google CX ID", env["GOOGLE_CX_ID"], "google_cx_id",
-            "programmablesearchengine.google.com — Search Engine ID",
-        )
-
-        st.markdown("---")
-        st.caption(
-            "Crea un file `.env` dal template `.env.example` per evitare "
-            "di inserire le chiavi ad ogni sessione."
-        )
+        st.caption("Subdomain Enumeration (crt.sh) sempre attivo — nessuna key richiesta.")
 
     return {
         "mode": mode,
-        "provider": provider,
-        "model_name": model_name,
-        "ai_key": ai_key,
-        "openai_base_url": openai_base_url,
-        "openai_model": openai_model,
-        "hunter_key": hunter_key,
-        "leaklookup_key": leaklookup_key,
-        "zoomeye_key": zoomeye_key,
-        "censys_id": censys_id,
-        "censys_secret": censys_secret,
-        "leakix_key": leakix_key,
-        "google_search_key": google_search_key,
-        "google_cx_id": google_cx_id,
+        "provider": "gemini",
+        "model_name": _GEMINI_MODEL,
+        "ai_key": env["GEMINI_API_KEY"],
+        "hunter_key": env["HUNTER_API_KEY"],
+        "leaklookup_key": env["LEAKLOOKUP_API_KEY"],
+        "zoomeye_key": env["ZOOMEYE_API_KEY"],
+        "censys_id": env["CENSYS_API_ID"],
+        "censys_secret": env["CENSYS_API_SECRET"],
+        "leakix_key": env["LEAKIX_API_KEY"],
+        "google_search_key": env["GOOGLE_SEARCH_API_KEY"],
+        "google_cx_id": env["GOOGLE_CX_ID"],
     }
 
 
@@ -202,10 +117,6 @@ def _render_breach_table(df: pd.DataFrame) -> None:
 def _run_subdomain_pipeline(
     domain: str, tab: "st.delta_generator.DeltaGenerator"
 ) -> list[str]:
-    """Fetch subdomains via crt.sh CT logs and render results inside `tab`.
-
-    Returns the list of subdomains found (empty list on failure).
-    """
     with tab:
         with st.spinner(f"🔗 Enumerazione sottodomini via Certificate Transparency per **{domain}**…"):
             try:
@@ -236,7 +147,6 @@ def _run_email_breach_pipeline(
     subdomains: list[str] | None = None,
     exposed_documents: list[dict[str, str]] | None = None,
 ) -> None:
-    """Execute Hunter.io → Leak-Lookup → AI report and render inside `tab`."""
     with tab:
         if not config["hunter_key"]:
             st.warning("⚠️ Hunter.io API Key non configurata — pipeline email disabilitata.")
@@ -248,10 +158,7 @@ def _run_email_breach_pipeline(
         with st.spinner(f"📧 Ricerca email su Hunter.io per **{domain}**…"):
             try:
                 emails = fetch_emails_for_domain(domain, config["hunter_key"])
-            except ValueError as exc:
-                st.error(f"❌ {exc}")
-                return
-            except RuntimeError as exc:
+            except (ValueError, RuntimeError) as exc:
                 st.error(f"❌ {exc}")
                 return
 
@@ -279,7 +186,7 @@ def _run_email_breach_pipeline(
                 try:
                     report = generate_risk_report(
                         data_json=breach_data,
-                        provider="gemini" if config["provider"] == "gemini" else "openai",
+                        provider="gemini",
                         model_name=config["model_name"],
                         api_key=config["ai_key"],
                         subdomains=subdomains or [],
@@ -291,7 +198,7 @@ def _run_email_breach_pipeline(
                 except RuntimeError as exc:
                     st.warning(f"⚠️ Report AI non disponibile: {exc}")
         else:
-            st.info("ℹ️ AI API Key non configurata — report AI saltato.")
+            st.info("ℹ️ Gemini API Key non configurata — report AI saltato.")
 
         st.subheader("📊 Dettaglio Email e Breach")
         df = _build_breach_dataframe(breach_data)
@@ -308,16 +215,10 @@ def _run_dorking_pipeline(
     config: dict,
     tab: "st.delta_generator.DeltaGenerator",
 ) -> list[dict[str, str]]:
-    """Run Google Dorking via Custom Search API and render results inside `tab`.
-
-    Returns list of exposed document dicts (empty on skip or no results).
-    """
     with tab:
         if not config["google_search_key"] or not config["google_cx_id"]:
             st.warning(
-                "⚠️ Google Search API Key o CX ID non configurati — "
-                "modulo Dorking saltato. Configura `GOOGLE_SEARCH_API_KEY` e "
-                "`GOOGLE_CX_ID` nella sidebar o nel file `.env`."
+                "⚠️ Google Search API Key o CX ID non configurati — modulo Dorking saltato."
             )
             return []
 
@@ -357,7 +258,6 @@ def _run_dorking_pipeline(
 def _run_network_intel_pipeline(
     domain: str, config: dict, tab: "st.delta_generator.DeltaGenerator"
 ) -> None:
-    """Execute DNS → ZoomEye + Censys + LeakIX → merge → AI report inside `tab`."""
     with tab:
         has_source = (
             bool(config["zoomeye_key"])
@@ -446,26 +346,18 @@ def _run_network_intel_pipeline(
         if config["ai_key"]:
             with st.spinner("🤖 Generazione report AI (network intel)…"):
                 try:
-                    if config["provider"] == "gemini":
-                        host_report = analyze_with_gemini(
-                            api_key=config["ai_key"],
-                            model_name=config["model_name"],
-                            data=merged,
-                        )
-                    else:
-                        host_report = analyze_with_openai_compat(
-                            api_key=config["ai_key"],
-                            base_url=config["openai_base_url"],
-                            model=config["openai_model"],
-                            data=merged,
-                        )
+                    host_report = analyze_with_gemini(
+                        api_key=config["ai_key"],
+                        model_name=config["model_name"],
+                        data=merged,
+                    )
                     st.subheader("🤖 Report AI — Network Risk")
                     st.markdown(host_report)
                     st.markdown("---")
                 except RuntimeError as exc:
                     st.warning(f"⚠️ Report AI non disponibile: {exc}")
         else:
-            st.info("ℹ️ AI API Key non configurata — report AI saltato.")
+            st.info("ℹ️ Gemini API Key non configurata — report AI saltato.")
 
         st.subheader("🗂️ Porte, Servizi e Vulnerabilità")
         df = to_dataframe(merged)
@@ -602,6 +494,9 @@ def _render_analysis_page(config: dict) -> None:
     )
     st.markdown("---")
 
+    if "scan_count" not in st.session_state:
+        st.session_state.scan_count = 0
+
     col_input, col_btn = st.columns([4, 1])
     with col_input:
         domain: str = st.text_input(
@@ -613,24 +508,33 @@ def _render_analysis_page(config: dict) -> None:
     with col_btn:
         analyze_btn = st.button("🔍 Analizza", width="stretch", type="primary")
 
+    remaining = _MAX_SCANS_PER_SESSION - st.session_state.scan_count
+    if remaining < _MAX_SCANS_PER_SESSION:
+        st.caption(f"Analisi questa sessione: {st.session_state.scan_count}/{_MAX_SCANS_PER_SESSION}")
+
     if not analyze_btn:
         st.markdown(
             """
             #### Come usare OSINT Risk Mapper
-            1. Configura le **chiavi API** nella sidebar (o crea `.env` da `.env.example`).
-            2. Seleziona il **modello AI** per i report.
-            3. Inserisci un **dominio aziendale** (es. `azienda.it`).
-            4. Clicca **Analizza** — verranno eseguite tutte le pipeline:
+            1. Inserisci un **dominio aziendale** nel campo sopra (es. `azienda.it`)
+            2. Clicca **Analizza** — le pipeline vengono eseguite automaticamente
 
             | Tab | Pipeline | Fonti |
             |-----|----------|-------|
             | 📧 Email Breach | Discovery email → Breach check → AI report | Hunter.io + Leak-Lookup |
             | 🌐 Network Intel | DNS resolve → Host scan passivo → AI report | ZoomEye + Censys + LeakIX |
-            | 🔗 Subdomain Enumeration | CT log query → dedup → tabella sottodomini | crt.sh (gratuito, no API key) |
-            | 📄 Google Dorking | Dork query → file sensibili esposti | Google Custom Search JSON API |
+            | 🔗 Subdomain Enumeration | CT log query → dedup → tabella sottodomini | crt.sh (gratuito) |
+            | 📄 Google Dorking | Dork query → file sensibili esposti | Google Custom Search |
             """
         )
         return
+
+    if st.session_state.scan_count >= _MAX_SCANS_PER_SESSION:
+        st.warning(
+            f"⚠️ Limite di {_MAX_SCANS_PER_SESSION} analisi per sessione raggiunto. "
+            "Ricarica la pagina per continuare."
+        )
+        st.stop()
 
     domain = (
         domain.strip().lower()
@@ -643,11 +547,7 @@ def _render_analysis_page(config: dict) -> None:
         st.error("❌ Inserisci un nome a dominio prima di procedere.")
         return
 
-    if not config["ai_key"]:
-        st.warning(
-            "⚠️ AI API Key non configurata — i report testuali AI non verranno generati. "
-            "I dati OSINT grezzi saranno comunque mostrati."
-        )
+    st.session_state.scan_count += 1
 
     tab_email, tab_network, tab_subdomains, tab_dorking = st.tabs([
         "📧 Email Breach", "🌐 Network Intel", "🔗 Subdomain Enumeration",

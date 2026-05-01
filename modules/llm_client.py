@@ -1,16 +1,10 @@
-"""
-LLM analysis module for host/network OSINT data.
-
-Supports Google Gemini (google-genai SDK) and any OpenAI-compatible endpoint
-(OpenAI, Anthropic via proxy, Ollama, etc.).
-"""
+"""LLM analysis module for host/network OSINT data (Gemini only)."""
 
 import json
 from typing import Any
 
 from google import genai
 from google.genai import types as genai_types
-from openai import OpenAI
 
 
 SYSTEM_PROMPT = (
@@ -25,7 +19,6 @@ _EXCLUDED_KEYS: frozenset[str] = frozenset({"sources_queried"})
 
 
 def _build_prompt(data: dict[str, Any]) -> str:
-    """Serialize merged host data to JSON, excluding redundant fields."""
     payload = {k: v for k, v in data.items() if k not in _EXCLUDED_KEYS}
     if "ports" in payload and isinstance(payload["ports"], dict):
         payload["ports"] = list(payload["ports"].values())
@@ -63,40 +56,3 @@ def analyze_with_gemini(
         return response.text or ""
     except Exception as exc:
         raise RuntimeError(f"Gemini API error (host report): {exc}") from exc
-
-
-def analyze_with_openai_compat(
-    api_key: str,
-    base_url: str,
-    model: str,
-    data: dict[str, Any],
-) -> str:
-    """Send host data to any OpenAI-compatible chat endpoint and return the risk report.
-
-    Compatible with: OpenAI, Anthropic (via proxy), Ollama (http://localhost:11434/v1).
-
-    Args:
-        api_key:  Provider API key (or 'ollama' for local Ollama).
-        base_url: Root URL of the API, e.g. 'https://api.openai.com/v1'.
-        model:    Model identifier, e.g. 'gpt-4o-mini' or 'llama3.2'.
-        data:     Merged host dict from merger.merge_sources.
-
-    Returns:
-        Report text produced by the model.
-
-    Raises:
-        RuntimeError: On API call failures.
-    """
-    try:
-        client = OpenAI(api_key=api_key, base_url=base_url)
-        response = client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": _build_prompt(data)},
-            ],
-            max_tokens=1024,
-        )
-        return response.choices[0].message.content or ""
-    except Exception as exc:
-        raise RuntimeError(f"OpenAI-compat API error (host report): {exc}") from exc

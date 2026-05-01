@@ -1,26 +1,31 @@
-"""Secure credential loading from .env file."""
+"""Secure credential loading — Streamlit secrets (Cloud) with .env fallback (local)."""
 
 import os
+
+import streamlit as st
 from dotenv import load_dotenv
 
 load_dotenv()
 
+_KEYS = [
+    "HUNTER_API_KEY",
+    "LEAKLOOKUP_API_KEY",
+    "ZOOMEYE_API_KEY",
+    "CENSYS_API_ID",
+    "CENSYS_API_SECRET",
+    "LEAKIX_API_KEY",
+    "GEMINI_API_KEY",
+    "GOOGLE_SEARCH_API_KEY",
+    "GOOGLE_CX_ID",
+]
+
 
 def get_api_keys() -> dict[str, str]:
-    """Load all API keys from environment variables.
+    """Load API keys from st.secrets (Streamlit Cloud) or environment variables (local)."""
+    def _get(key: str) -> str:
+        try:
+            return st.secrets.get(key, "") or os.getenv(key, "")
+        except Exception:
+            return os.getenv(key, "")
 
-    Returns a dict with empty strings for keys not set,
-    so callers can safely use .get() or truthiness checks.
-    """
-    return {
-        "HUNTER_API_KEY": os.getenv("HUNTER_API_KEY", ""),
-        "LEAKLOOKUP_API_KEY": os.getenv("LEAKLOOKUP_API_KEY", ""),
-        "ZOOMEYE_API_KEY": os.getenv("ZOOMEYE_API_KEY", ""),
-        "CENSYS_API_ID": os.getenv("CENSYS_API_ID", ""),
-        "CENSYS_API_SECRET": os.getenv("CENSYS_API_SECRET", ""),
-        "LEAKIX_API_KEY": os.getenv("LEAKIX_API_KEY", ""),
-        "GEMINI_API_KEY": os.getenv("GEMINI_API_KEY", ""),
-        "OPENAI_API_KEY": os.getenv("OPENAI_API_KEY", ""),
-        "GOOGLE_SEARCH_API_KEY": os.getenv("GOOGLE_SEARCH_API_KEY", ""),
-        "GOOGLE_CX_ID": os.getenv("GOOGLE_CX_ID", ""),
-    }
+    return {k: _get(k) for k in _KEYS}
