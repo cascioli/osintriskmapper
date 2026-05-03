@@ -31,6 +31,16 @@ from modules.scan_context import (
     SubdomainScanResult,
 )
 
+from collections.abc import Callable
+from datetime import datetime
+
+LogFn = Callable[[str], None]
+ProgressFn = Callable[[float], None]
+
+def _noop_log(msg: str) -> None: pass
+def _noop_progress(val: float) -> None: pass
+def _ts() -> str: return datetime.now().strftime("%H:%M:%S")
+
 _SENSITIVE_SERVICES = {
     "mongodb", "redis", "elasticsearch", "cassandra", "memcached",
     "couchdb", "rabbitmq", "mysql", "postgresql", "mssql",
@@ -242,37 +252,56 @@ def _build_entity_extraction_prompt(ctx: ScanContext) -> str:
 
 # ── Public round functions ────────────────────────────────────────────────────
 
-def run_round1(ctx: ScanContext) -> ScanContext:
+def run_round1(
+    ctx: ScanContext,
+    log_fn: LogFn = _noop_log,
+    progress_fn: ProgressFn = _noop_progress,
+) -> ScanContext:
     """Round 1: basic scans — subdomains, dorking, email breach, primary network."""
     config = ctx.config
 
     # Subdomains (always available — no key needed)
+    log_fn(f"[{_ts()}] Round 1 → Subdomain enum: avvio...")
+    progress_fn(0.02)
     try:
         ctx.subdomains = get_subdomains(ctx.domain)
     except RuntimeError:
         ctx.subdomains = []
+    log_fn(f"[{_ts()}] Round 1 → Subdomains: {len(ctx.subdomains)} trovati")
+    progress_fn(0.05)
 
     # Google Dorking (generic)
-    if config.get("google_search_key") and config.get("google_cx_id"):
+    if config.get("serper_key") or config.get("serpapi_key"):
+        log_fn(f"[{_ts()}] Round 1 → Dorking generico: avvio...")
         try:
             ctx.exposed_documents = search_exposed_documents(
-                ctx.domain, config["google_search_key"], config["google_cx_id"]
+                ctx.domain,
+                config.get("serper_key", ""),
+                fallback_key=config.get("serpapi_key", ""),
             )
         except RuntimeError:
             ctx.exposed_documents = []
+    log_fn(f"[{_ts()}] Round 1 → Dorking: {len(ctx.exposed_documents)} documenti trovati")
+    progress_fn(0.10)
 
     # Email discovery + breach check
     if config.get("hunter_key"):
+        log_fn(f"[{_ts()}] Round 1 → Email Hunter.io: avvio...")
         try:
             ctx.emails = fetch_emails_for_domain(ctx.domain, config["hunter_key"])
         except (ValueError, RuntimeError):
             ctx.emails = []
+    log_fn(f"[{_ts()}] Round 1 → Email Hunter.io: {len(ctx.emails)} trovate")
+    progress_fn(0.13)
 
     if ctx.emails and config.get("leaklookup_key"):
+        log_fn(f"[{_ts()}] Round 1 → Breach check Leak-Lookup: avvio...")
         try:
             ctx.breach_data = check_emails_for_breaches(ctx.emails, config["leaklookup_key"])
         except ValueError:
             ctx.breach_data = {}
+    log_fn(f"[{_ts()}] Round 1 → Breach check: {sum(1 for v in ctx.breach_data.values() if v)} compromesse")
+    progress_fn(0.16)
 
     # Primary IP + network scan
     has_network = (
@@ -281,12 +310,15 @@ def run_round1(ctx: ScanContext) -> ScanContext:
         or bool(config.get("leakix_key"))
     )
     if has_network:
+        log_fn(f"[{_ts()}] Round 1 → Network scan IP primario: avvio...")
         try:
             ctx.primary_ip = resolve_target(ctx.domain)
             ctx.primary_host = _scan_ip(ctx.primary_ip, config)
         except ValueError:
             ctx.primary_ip = None
             ctx.primary_host = None
+    log_fn(f"[{_ts()}] Round 1 → Network primario: {ctx.primary_ip or 'N/D'}")
+    progress_fn(0.20)
 
     return ctx
 
@@ -318,7 +350,12 @@ def estimate_api_calls(ctx: ScanContext, max_subs: int) -> dict:
     }
 
 
-def run_round2(ctx: ScanContext, max_subs: int = 20) -> ScanContext:
+def run_round2(
+    ctx: ScanContext,
+    max_subs: int = 20,
+    log_fn: LogFn = _noop_log,
+    progress_fn: ProgressFn = _noop_progress,
+) -> ScanContext:
     """Round 2: synergistic scans — subdomain network, targeted dorking, email-IP correlation."""
     config = ctx.config
 
@@ -327,26 +364,37 @@ def run_round2(ctx: ScanContext, max_subs: int = 20) -> ScanContext:
     if ctx.primary_ip:
         already_scanned.add(ctx.primary_ip)
 
-    for subdomain in ctx.subdomains[:max_subs]:
+    subs_to_scan = ctx.subdomains[:max_subs]
+    per_sub = 0.40 / max(len(subs_to_scan), 1)
+
+    for i, subdomain in enumerate(subs_to_scan):
         try:
             ip = resolve_target(subdomain)
         except ValueError:
             ctx.subdomain_results.append(SubdomainScanResult(subdomain, None, None))
+            log_fn(f"[{_ts()}] Round 2 → {subdomain}: DNS fail, skip")
+            progress_fn(0.20 + (i + 1) * per_sub)
             continue
 
         if ip in already_scanned:
             # Same IP as an already-scanned host — record subdomain but skip scan
             ctx.subdomain_results.append(SubdomainScanResult(subdomain, ip, None))
+            log_fn(f"[{_ts()}] Round 2 → {subdomain}: stesso IP ({ip}), skip")
+            progress_fn(0.20 + (i + 1) * per_sub)
             continue
 
         already_scanned.add(ip)
         merged = _scan_ip(ip, config)
         ctx.subdomain_results.append(SubdomainScanResult(subdomain, ip, merged))
+        log_fn(f"[{_ts()}] Round 2 → Scansione {subdomain} ({ip}): {len(merged.get('ports', {}))} porte")
+        progress_fn(0.20 + (i + 1) * per_sub)
 
     # 2b: Extract exposed services + targeted dorking
     ctx.exposed_services = _extract_exposed_services(ctx.primary_host, ctx.subdomain_results)
+    log_fn(f"[{_ts()}] Round 2 → Servizi esposti: {len(ctx.exposed_services)} rilevati")
+    progress_fn(0.62)
 
-    if config.get("google_search_key") and config.get("google_cx_id"):
+    if config.get("serper_key") or config.get("serpapi_key"):
         seen_queries: set[str] = set()
         for svc in ctx.exposed_services[:5]:  # cap to avoid quota exhaustion
             for query in _generate_targeted_dork_queries(ctx.domain, svc):
@@ -354,8 +402,13 @@ def run_round2(ctx: ScanContext, max_subs: int = 20) -> ScanContext:
                     continue
                 seen_queries.add(query)
                 try:
-                    results = search_by_query(query, config["google_search_key"], config["google_cx_id"])
+                    results = search_by_query(
+                        query,
+                        config.get("serper_key", ""),
+                        fallback_key=config.get("serpapi_key", ""),
+                    )
                     ctx.targeted_dork_results.extend(results)
+                    log_fn(f"[{_ts()}] Round 2 → Dorking: '{query[:50]}' → {len(results)} risultati")
                 except RuntimeError:
                     pass
 
@@ -372,15 +425,26 @@ def run_round2(ctx: ScanContext, max_subs: int = 20) -> ScanContext:
     ctx.email_ip_correlations = _correlate_emails_with_leakix(
         ctx.breach_data, ctx.primary_host, ctx.subdomain_results
     )
+    log_fn(f"[{_ts()}] Round 2 → Correlazioni email-IP: {len(ctx.email_ip_correlations)}")
+    progress_fn(0.70)
 
     return ctx
 
 
-def run_round3(ctx: ScanContext) -> ScanContext:
+def run_round3(
+    ctx: ScanContext,
+    log_fn: LogFn = _noop_log,
+    progress_fn: ProgressFn = _noop_progress,
+) -> ScanContext:
     """Round 3: LLM entity extraction + follow-up scans on suggested IPs/domains."""
     config = ctx.config
     if not config.get("ai_key"):
+        log_fn(f"[{_ts()}] Round 3 → Gemini API Key mancante, skip")
+        progress_fn(0.90)
         return ctx
+
+    log_fn(f"[{_ts()}] Round 3 → Gemini entity extraction: avvio...")
+    progress_fn(0.72)
 
     try:
         client = genai.Client(api_key=config["ai_key"])
@@ -403,7 +467,11 @@ def run_round3(ctx: ScanContext) -> ScanContext:
         ctx.llm_suggested_ips = suggested.get("ips", [])[:_MAX_FOLLOW_UP]
         ctx.llm_suggested_domains = suggested.get("domains", [])[:_MAX_FOLLOW_UP]
     except Exception:
+        progress_fn(0.90)
         return ctx
+
+    log_fn(f"[{_ts()}] Round 3 → Gemini: {len(ctx.llm_suggested_ips)} IP, {len(ctx.llm_suggested_domains)} domini suggeriti")
+    progress_fn(0.78)
 
     # Scan suggested entities
     already_scanned: set[str] = set()
@@ -413,13 +481,17 @@ def run_round3(ctx: ScanContext) -> ScanContext:
         if r.ip:
             already_scanned.add(r.ip)
 
+    followup_idx = 0
     for ip in ctx.llm_suggested_ips:
         if ip in already_scanned:
             continue
         already_scanned.add(ip)
+        log_fn(f"[{_ts()}] Round 3 → Scansione IP suggerito: {ip}")
+        progress_fn(0.78 + followup_idx * 0.012)
         merged = _scan_ip(ip, config)
         if merged.get("sources_ok"):
             ctx.follow_up_host_results.append(merged)
+        followup_idx += 1
 
     for dom in ctx.llm_suggested_domains:
         try:
@@ -429,17 +501,28 @@ def run_round3(ctx: ScanContext) -> ScanContext:
         if ip in already_scanned:
             continue
         already_scanned.add(ip)
+        log_fn(f"[{_ts()}] Round 3 → Scansione dominio suggerito: {dom} ({ip})")
+        progress_fn(0.78 + followup_idx * 0.012)
         merged = _scan_ip(ip, config)
         if merged.get("sources_ok"):
             ctx.follow_up_host_results.append(merged)
+        followup_idx += 1
 
+    progress_fn(0.90)
     return ctx
 
 
-def run_final(ctx: ScanContext) -> ScanContext:
+def run_final(
+    ctx: ScanContext,
+    log_fn: LogFn = _noop_log,
+    progress_fn: ProgressFn = _noop_progress,
+) -> ScanContext:
     """Final round: generate unified LLM report and build graph data."""
     from modules.unified_report import generate_unified_report
     from modules.graph_builder import build_graph_data
+
+    log_fn(f"[{_ts()}] Final → Generazione report unificato Gemini...")
+    progress_fn(0.91)
 
     if ctx.config.get("ai_key"):
         try:
@@ -450,6 +533,13 @@ def run_final(ctx: ScanContext) -> ScanContext:
             )
         except RuntimeError:
             ctx.unified_report = None
+    log_fn(f"[{_ts()}] Final → Report generato ({len(ctx.unified_report or '')} chars)")
+    progress_fn(0.96)
 
     ctx.graph_data = build_graph_data(ctx)
+    n_nodes = len((ctx.graph_data or {}).get("nodes", []))
+    n_edges = len((ctx.graph_data or {}).get("edges", []))
+    log_fn(f"[{_ts()}] Final → Grafo: {n_nodes} nodi, {n_edges} archi")
+    progress_fn(1.0)
+
     return ctx

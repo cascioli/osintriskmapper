@@ -15,8 +15,8 @@ _KEYS = [
     "CENSYS_API_SECRET",
     "LEAKIX_API_KEY",
     "GEMINI_API_KEY",
-    "GOOGLE_SEARCH_API_KEY",
-    "GOOGLE_CX_ID",
+    "SERPER_API_KEY",
+    "SERPAPI_KEY",
 ]
 
 
